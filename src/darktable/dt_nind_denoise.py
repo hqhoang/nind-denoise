@@ -14,17 +14,53 @@ import configparser
 from bs4 import BeautifulSoup
 import copy
 
+notouch_ops = [
+]
 
 # list of operations to be moved to second stage
 post_ops = [
-  'filmicrgb',
-  #'toneequal', tone-equalizer seems to depend on exposure to align the histogram
+  'ashift',         # rotate & perspective
+  'bilat',          # local contrast
+  'blurs',
+  'borders',        # framing
   'colorbalancergb',
   'crop',
-  'lens',
-  'bilat', # local contrast
-  'ashift',
-  'flip'
+  'filmicrgb',
+  #'flip',          # orientation
+  'cacorrectrgb',   # chromatic aberrations
+  'clahe',          # local contrast
+  'denoiseprofile',
+  'diffuse',        # diffuse or sharpen
+  'dither',         # dithering
+  'hazeremoval',
+  'invert',
+  'lens',           # lens correction
+  'levels',
+  'liquify',
+  'lowlight',       # lowlight vision
+  'lut3d',
+  'monochrome',
+  'nlmeans',        # astro photo denoise
+  'rawdenoise',
+  'retouch',
+  'rgbcurve',
+  'rgblevels',
+  'rotatepixels',
+  'scalepixels',
+  'shadhi',         # shadow and highlight
+  'sharpen',
+  'sigmoid',
+  'soften',
+  'splittoning',
+  'spots',          # spot removal
+  'tonecurve',
+  #'toneequal',     # tone-equalizer seems to depend on exposure to align the histogram
+  'tonemap',        # tone-mapping
+  'velvia',
+  'vibrance',
+  'vignette',
+  'watermark',
+  'zonesystem'
 ]
 
 
@@ -126,7 +162,7 @@ def main(argv):
       if args.debug:
         print("\nPrepping first stage ...")
 
-      for op in history_ops:
+      for op in reversed(history_ops):
         if op['darktable:operation'] in post_ops:
           op['darktable:enabled'] = "0"
 
@@ -147,14 +183,16 @@ def main(argv):
       if args.debug:
         print("\nPrepping second stage ...")
 
-      for op in history_ops:
+      for op in reversed(history_ops):
         if op['darktable:operation'] in post_ops:
           if args.debug:
             print("default:    ", op['darktable:operation'], op['darktable:enabled'])
         else:
-          op.extract()    # remove the op completely
-          if args.debug:
-            print("--disabled: ", op['darktable:operation'])
+          if op['darktable:operation'] not in notouch_ops:
+            op.extract()    # remove the op completely
+
+            if args.debug:
+              print("--removed: ", op['darktable:operation'])
 
       with open(filename+'.s2.xmp', 'w') as second_stage:
           second_stage.write(sidecar.prettify())
@@ -167,7 +205,7 @@ def main(argv):
         os.remove(s1_filename)
 
       cmd = cmd_darktable + ' "' + filename + '" "' + filename + '.s1.xmp" "' + s1_filename + '" ' + \
-            '--apply-custom-presets 0 --core --conf plugins/imageio/format/tiff/bpp=16 '
+            '--apply-custom-presets 0 --icc-intent ABSOLUTE_COLORIMETRIC --core --conf plugins/imageio/format/tiff/bpp=32 '
 
       if args.debug:
         print('First-stage cmd: ', cmd)
@@ -180,7 +218,7 @@ def main(argv):
 
 
       # call nind-denoise
-      denoised_filename = outdir + '/' + basename + '_s1_denoised.tif'
+      denoised_filename = outdir + '/' + basename + '_s1_denoised.tiff' # for nind-denoise: tif = 16-bit, tiff = 32-bit
 
       if os.path.exists(denoised_filename):
         os.remove(denoised_filename)
@@ -207,7 +245,7 @@ def main(argv):
         s2_filename = out_filename
 
       cmd = cmd_darktable + ' "' + denoised_filename + '" "' + filename + '.s2.xmp" "' + s2_filename + '" ' + \
-            '--apply-custom-presets 0'
+            '--apply-custom-presets 0 --icc-intent PERCEPTUAL --core --conf plugins/imageio/format/tiff/bpp=16 '
 
       if args.debug:
         print('Second-stage cmd: ', cmd)
@@ -233,7 +271,7 @@ def main(argv):
 
 
       # copy exif
-      cmd = cmd_exiftool + ' -writeMode cg -TagsFromFile "' + filename + '" -all:all -overwrite_original "' + out_filename + '"'
+      cmd = cmd_exiftool + ' -writeMode cg -TagsFromFile "' + s2_filename + '" -all:all -overwrite_original "' + out_filename + '"'
 
       if args.debug:
         print("exiftool cmd: ", cmd)

@@ -21,6 +21,7 @@ import torchvision
 import torch
 import math
 from PIL import Image, ImageOps
+import cv2
 from torch.utils.data import DataLoader
 from torch.utils.data import Dataset
 import time
@@ -167,7 +168,7 @@ class OneImageDS(Dataset):
             usefuldim = (self.pad, self.pad, self.cs-max(self.pad,x1pad), self.cs-max(self.pad,y1pad))
             usefulstart = (x0+self.pad, y0+self.pad)
         return torch.tensor(ret), torch.IntTensor(usefuldim), torch.IntTensor(usefulstart)
-    
+
     def __len__(self):
         return self.size
 
@@ -192,11 +193,11 @@ if __name__ == '__main__':
     parser.add_argument('--whole_image', action='store_true', help='Ignore cs and ucs, denoise whole image')
     parser.add_argument('--pad', type=int, help='Padding amt per side, only used for whole image (otherwise (cs-ucs)/2')
     parser.add_argument('--models_dpath', help='Directory where all models are saved (used when a model name is provided as model_path)')
-    
+
     args, _ = parser.parse_known_args()
     assert args.model_path is not None
     autodetect_network_cs_ucs(args)
-    
+
     def make_seamless_edges(tcrop, x0, y0):
         if x0 != 0:#left
             tcrop[:,:,0:args.overlap] = tcrop[:,:,0:args.overlap].div(2)
@@ -231,7 +232,7 @@ if __name__ == '__main__':
                          num_workers=0 if args.batch_size == 1 else max(min(args.batch_size, os.cpu_count()//4), 1),
                          drop_last=False, batch_size=args.batch_size, shuffle=False)
     topil = torchvision.transforms.ToPILImage()
-    fswidth, fsheight = Image.open(args.input).size
+    fsheight, fswidth = cv2.imread(args.input, -1).shape[0:2]
     newimg = torch.zeros(3, fsheight, fswidth, dtype=torch.float32)
 
     start_time = time.time()
