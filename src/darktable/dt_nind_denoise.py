@@ -19,14 +19,12 @@ notouch_ops = [
 
 # list of operations to be moved to second stage
 post_ops = [
-  'ashift',         # rotate & perspective
+  'ashift',         # rotate & perspective, NOTE: autocrop doesn't auto-apply via non-interactive mode
   'bilat',          # local contrast
   'blurs',
   'borders',        # framing
   'colorbalancergb',
   'crop',
-  'filmicrgb',
-  #'flip',          # orientation
   'cacorrectrgb',   # chromatic aberrations
   'clahe',          # local contrast
   'denoiseprofile',
@@ -42,25 +40,31 @@ post_ops = [
   'monochrome',
   'nlmeans',        # astro photo denoise
   'rawdenoise',
-  'retouch',
   'rgbcurve',
   'rgblevels',
   'rotatepixels',
   'scalepixels',
   'shadhi',         # shadow and highlight
   'sharpen',
-  'sigmoid',
   'soften',
   'splittoning',
   'spots',          # spot removal
   'tonecurve',
-  #'toneequal',     # tone-equalizer seems to depend on exposure to align the histogram
   'tonemap',        # tone-mapping
   'velvia',
   'vibrance',
   'vignette',
   'watermark',
-  'zonesystem'
+  'zonesystem',
+
+  # the below should belong to 1st stage
+  # 'exposure',
+  # 'filmicrgb',     # it needs full data from original file
+  # 'flip',          # orientation
+  # 'gamma',
+  # 'retouch',
+  # 'sigmoid',       # it needs full data from original file
+  # 'toneequal',     # tone-equalizer seems to depend on exposure to align the histogram
 ]
 
 
@@ -86,8 +90,8 @@ def main(argv):
                         help="JPEG compression quality, default: 90")
     parser.add_argument("-s", "--sigma", dest="sigma", type=float, default=1,
                         help="RL-deblur sigma, default: 1")
-    parser.add_argument("-i", "--iter", dest="iteration", type=int, default=20,
-                        help="RL-deblur number of iteration, default: 20")
+    parser.add_argument("-i", "--iter", dest="iteration", type=int, default=10,
+                        help="RL-deblur number of iteration, default: 10")
 
     args = parser.parse_args()
 
@@ -205,7 +209,7 @@ def main(argv):
         os.remove(s1_filename)
 
       cmd = cmd_darktable + ' "' + filename + '" "' + filename + '.s1.xmp" "' + s1_filename + '" ' + \
-            '--apply-custom-presets 0 --icc-intent ABSOLUTE_COLORIMETRIC --core --conf plugins/imageio/format/tiff/bpp=32 '
+            '--apply-custom-presets 0 --core --conf plugins/imageio/format/tiff/bpp=32 '
 
       if args.debug:
         print('First-stage cmd: ', cmd)
@@ -235,6 +239,15 @@ def main(argv):
         continue
 
 
+      # copy exif from RAW file to denoised image
+      cmd = cmd_exiftool + ' -writeMode cg -TagsFromFile "' + filename + '" -all:all -overwrite_original "' + denoised_filename + '"'
+      if args.debug:
+        print("exiftool cmd: ", cmd)
+
+      subprocess.call(cmd, shell=True)
+      print('Copied EXIF from ' + filename + ' to ' + denoised_filename)
+
+
       # invoke darktable-cli with second stage
       if args.rldeblur:
         s2_filename = outdir + '/' + basename + '_s2.tif'
@@ -245,7 +258,7 @@ def main(argv):
         s2_filename = out_filename
 
       cmd = cmd_darktable + ' "' + denoised_filename + '" "' + filename + '.s2.xmp" "' + s2_filename + '" ' + \
-            '--apply-custom-presets 0 --icc-intent PERCEPTUAL --core --conf plugins/imageio/format/tiff/bpp=16 '
+            '--apply-custom-presets 0 --core --conf plugins/imageio/format/tiff/bpp=16 '
 
       if args.debug:
         print('Second-stage cmd: ', cmd)
