@@ -8,9 +8,8 @@ Denoise the raw image denoted by <filename> and save the results.
 Usage:
     denoise.py [-o <outpath> | --output-path=<outpath>] [-e <e> | --extension=<e>]
                 [-d <darktable> | --dt=<darktable>] [-g <gmic> | --gmic=<gmic>] [ -q <q> | --quality=<q>]
-                 [-v | --verbose] [--tiff-input ] <raw_image>
                 [--nightmode ] [ --no_deblur ] [ --debug ] [ --sigma=<sigma> ] [ --iterations=<iter> ]
-                [-v | --verbose] <raw_image>
+                [-v | --verbose] [--tiff-input ] <raw_image>...
     denoise.py (help | -h | --help)
     denoise.py --version
 
@@ -75,7 +74,7 @@ def check_good_input(path: pathlib.Path, extensions=None) -> bool:
     assert type(extensions) == list
 
     if not path.is_file():
-        print("This isn't a file: ", path, ", ")
+        print("This isn't a file: '", path, "', ")
         if not path.exists():
             print("In fact, it doesn't exist. ")
         print("Either way, I'm skipping it. \n")
@@ -122,7 +121,7 @@ def clone_exif(src_file: pathlib.Path, dst_file: pathlib.Path, verbose=False) ->
     if verbose:
         print(f'Copied EXIF from {src_file} to {dst_file}')
 
-def read_config(config_path='./src/config/operations.yaml', _nightmode=False, verbose=False) -> dict:
+def read_config(config_path=pathlib.Path(__file__).resolve().parent/'config/operations.yaml', _nightmode=False, verbose=False) -> dict:
     """
     Reads a configuration file and optionally modifies it for night mode.
 
@@ -360,13 +359,12 @@ def denoise_file(_args: dict, _input_path: pathlib.Path):
         print("\nError: darktable-cli (" + cmd_darktable + ") does not exist or not accessible.")
         raise FileNotFoundError
 
-    good_file = ((args.get('--tiff-input') and check_good_input(_input_path, ['.tif', '.tiff'])) 
-                or check_good_input(_input_path, valid_extensions)) or check_good_input(input_xmp, '.xmp')
+    good_file = ((args.get('--tiff-input') and check_good_input(_input_path, ['.tif', '.tiff']))
+                  or check_good_input(_input_path, valid_extensions)) and check_good_input(input_xmp, '.xmp')
     if not good_file:
         print("The input raw-image or its XMP were not found, or are not valid.")
-
         raise FileNotFoundError
-    
+
 
     i = 1
     while outpath.exists():
@@ -385,19 +383,20 @@ def denoise_file(_args: dict, _input_path: pathlib.Path):
         subprocess.run([cmd_darktable,
                         _input_path,
                         input_xmp.with_suffix('.s1.xmp'),
-                        stage_one_output_filepath.name,
+                        stage_one_output_filepath,
                         '--apply-custom-presets', 'false',
                         '--core', '--conf', 'plugins/imageio/format/tiff/bpp=32'
                         ],
-                       cwd=outpath.parent, check=True)
+                        check=True)
 
         if not os.path.exists(os.path.abspath(stage_one_output_filepath)):
             print("Error: first-stage export not found: ", stage_one_output_filepath)
             raise ChildProcessError
+
     else:
         stage_one_output_filepath = _input_path
         parse_darktable_history_stack(input_xmp, config=config, verbose=verbose)
-    
+
 
     # ========== call nind-denoise ==========
     # 32-bit TIFF (instead of 16-bit) is needed to retain highlight reconstruction data from stage 1
@@ -407,19 +406,20 @@ def denoise_file(_args: dict, _input_path: pathlib.Path):
         os.remove(stage_one_denoised_filepath)
 
     model_config = config["models"]["nind_generator_650.pt"]
-    if not os.path.exists(model_config["path"]):
+    model_path = pathlib.Path(__file__).resolve().parent/model_config["path"]
+    if not os.path.exists(model_path):
         from torch import hub
         hub.download_url_to_file(
-            "https://f005.backblazeb2.com/file/modelzoo/nind/generator_650.pt", model_config["path"]
+            "https://f005.backblazeb2.com/file/modelzoo/nind/generator_650.pt", model_path
         )
 
-    subprocess.run([sys.executable, os.path.abspath("src/nind_denoise/denoise_image.py"),
+    subprocess.run([sys.executable, os.path.abspath(pathlib.Path(__file__).resolve().parent/"nind_denoise/denoise_image.py"),
                     '--network', 'UtNet',
-                    '--model_path', model_config["path"],
+                    '--model_path', model_path,
                     '--input', stage_one_output_filepath,
                     '--output', stage_one_denoised_filepath
                     ],
-                   check=True)
+                    check=True)
     if not os.path.exists(stage_one_denoised_filepath):
         print("Error: Denoiser did not output a file where it was supposed to: ", stage_one_denoised_filepath)
         raise RuntimeError
@@ -432,12 +432,12 @@ def denoise_file(_args: dict, _input_path: pathlib.Path):
     subprocess.run([cmd_darktable,
                     stage_one_denoised_filepath,  # image input
                     input_xmp.with_suffix('.s2.xmp'),  # xmp input
-                    stage_two_output_filepath.name,  # image output
+                    stage_two_output_filepath,  # image output
                     '--icc-intent', 'PERCEPTUAL', '--icc-type', 'SRGB',
                     '--apply-custom-presets', 'false',
                     '--core', '--conf', 'plugins/imageio/format/tiff/bpp=16'
                     ],
-                   cwd=outpath.parent, check=True)
+                    check=True)
 
     # call RL-deblur with gmic
     if rldeblur:
@@ -450,9 +450,9 @@ def denoise_file(_args: dict, _input_path: pathlib.Path):
         subprocess.run([cmd_gmic, stage_two_output_filepath,
                         '-deblur_richardsonlucy', str(sigma) + ',' + str(iteration) + ',' + '1',
                         '-/', '256', 'cut', '0,255', 'round',
-                        '-o', outpath.name + ',' + str(quality)
+                        '-o', str(outpath) + ',' + str(quality)
                          ],
-                       cwd=outpath.parent, check=True)
+                        check=True)
         if verbose:
             print('Applied RL-deblur to:', outpath)
         if restore_original_outpath is not None:
@@ -462,6 +462,7 @@ def denoise_file(_args: dict, _input_path: pathlib.Path):
 
     if not _args.get('--debug'):
         for intermediate_file in [stage_one_output_filepath,
+                                  stage_one_denoised_filepath,
                                   stage_two_output_filepath,
                                   input_xmp.with_suffix('.s1.xmp'),
                                   input_xmp.with_suffix('.s2.xmp')]:
@@ -469,11 +470,23 @@ def denoise_file(_args: dict, _input_path: pathlib.Path):
 
 if __name__ == '__main__':
     args = docopt(__doc__, version='__version__')
-    input_path = pathlib.Path(args["<raw_image>"])
-    if input_path.is_dir():
-        for file in input_path.iterdir():
-            if file.suffix.lower() in valid_extensions:
-                print("\n-----------------------", file.name, "-------------------------\n")
-                denoise_file(dict(args), _input_path=file)
-    else:
-        denoise_file(dict(args), _input_path=input_path)
+    path_list = args["<raw_image>"]
+
+    for filepath in path_list:
+        input_path = pathlib.Path(filepath)
+
+        if input_path.is_dir():
+            for file in input_path.iterdir():
+                try:
+                    if file.suffix.lower() in valid_extensions:
+                        print("\n-----------------------", file.name, "-------------------------\n")
+                        denoise_file(dict(args), _input_path=file)
+                except Exception as e:
+                    pass
+        else:
+            try:
+                print("\n-----------------------", input_path.name, "-------------------------\n")
+                denoise_file(dict(args), _input_path=input_path)
+            except FileNotFoundError:
+                print(f"Error occured, skipping to next file")
+
