@@ -27,6 +27,7 @@ import subprocess
 import shutil
 import logging
 import configparser
+import math
 from typing import Dict, Any, List
 from pathlib import Path
 
@@ -376,18 +377,23 @@ class DenoisePipeline:
                 noise_thresh = self.config.getfloat('grain', 'noise_thresh', fallback=150.0)
                 noise_amount = self.calculate_noise_level(full_grainy_tif, s2_tif)
 
+                # --- NEW DYNAMIC MASK PARAMS ---
+                luma_floor = self.config.getfloat('grain', 'shadow_floor', fallback=0.0)
+                luma_pivot = self.config.getfloat('grain', 'luma_pivot', fallback=None)
+                luma_max_sep = self.config.getfloat('grain', 'luma_max_sep', fallback=2.0)
+                # -------------------------------
+
                 # --- DYNAMIC ALPHA EVALUATION ---
                 alpha_raw = self.config.get('grain', 'alpha', fallback='0.20')
                 try:
-                    # Provide safe math functions and our dynamic 'noise' variable
-                    allowed_math = {"min": min, "max": max, "noise": noise_amount}
-                    # Evaluate the string from the INI file safely
+                    import math
+                    allowed_math = {
+                        "min": min, "max": max, "noise": noise_amount,
+                        "log": math.log, "log10": math.log10,
+                        "exp": math.exp, "pow": math.pow
+                    }
                     alpha = float(eval(alpha_raw, {"__builtins__": {}}, allowed_math))
-
-                    # Ensure alpha doesn't accidentally drop below 0 or above 1
-                    # due to a crazy formula
                     alpha = max(0.0, min(1.0, alpha))
-
                 except Exception as e:
                     self.logger.error(f"Invalid alpha formula '{alpha_raw}': {e}. Falling back to 0.20")
                     alpha = 0.20
@@ -399,10 +405,43 @@ class DenoisePipeline:
                     self.run_cmd(gmic_cmd)
                 else:
                     self.logger.info(f"High noise detected ({noise_amount:.2f}). Blending organic grain (alpha={alpha:.3f})...")
-                    blend_cmd = (f'{gmic_bin} "{current_clean}" "{full_grainy_tif}" "{s2_tif}" '
-                                 f'-sub[1,2] -mul[1] {alpha} -add[0,1] -c 0,65535 '
-                                 f'-/ 256 cut 0,255 round -o "{tmp_final},{self.args["--quality"]}"')
+
+                    if luma_pivot is not None:
+                        # --- DYNAMIC GAMMA CURVE CALCULATION ---
+                        # If luma_pivot = 0, gamma = 1.0 (linear mask).
+                        if luma_pivot == 0.0:
+                            gamma_sep = 1.0
+                        else:
+                            # Formula: min(max_sep, (noise / 150)^pivot)
+                            gamma_sep = min(luma_max_sep, (noise_amount / 150.0)**luma_pivot)
+
+                        # We must normalize the dynamic curve to fit between the floor and 1.0.
+                        mask_mult = 1.0 - luma_floor
+
+                        self.logger.info(f"   Using Dynamic Luma Mask: floor={luma_floor}, gamma={gamma_sep:.3f} (pivot={luma_pivot})")
+                        # ----------------------------------------
+
+                        # DYNAMIC LIFT & GAMMA MASK
+                        # +luminance[0] extracts B&W target image [3] in 16-bit space (0-65535)
+                        # -/[-1] 65535 normalizes [3] to (0.0 to 1.0)
+                        # -pow[-1] {gamma_sep} shapes the transition using the dynamic gamma
+                        # -mul[-1] {mask_mult} -add[-1] {luma_floor} ensures pure black = floor, pure white = 1.0
+                        blend_cmd = (f'{gmic_bin} "{current_clean}" "{full_grainy_tif}" "{s2_tif}" '
+                                     f'-sub[1,2] '
+                                     f'+luminance[0] -/[-1] 65535 -pow[-1] {gamma_sep} '
+                                     f'-mul[-1] {mask_mult} -add[-1] {luma_floor} '
+                                     f'-mul[1,2] '
+                                     f'-mul[1] {alpha} -add[0,1] -c 0,65535 '
+                                     f'-/ 256 cut 0,255 round -o "{tmp_final},{self.args["--quality"]}"')
+                    else:
+                        # STANDARD GLOBAL BLENDING (if no mask config provided)
+                        self.logger.info("   Applying grain GLOBALLY (no dynamic luma mask).")
+                        blend_cmd = (f'{gmic_bin} "{current_clean}" "{full_grainy_tif}" "{s2_tif}" '
+                                     f'-sub[1,2] -mul[1] {alpha} -add[0,1] -c 0,65535 '
+                                     f'-/ 256 cut 0,255 round -o "{tmp_final},{self.args["--quality"]}"')
+
                     self.run_cmd(blend_cmd)
+
             else:
                 if grain_style:
                     self.logger.warning(f"Grain style dtstyle not found: {grain_style}. Skipping grain blend.")
